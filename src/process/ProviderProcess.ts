@@ -104,6 +104,8 @@ export type ProviderProcessStopResult =
 /**
  * Spawn a provider in a dedicated POSIX process group with an ownership token.
  *
+ * The detach decision and the claimed group follow the configured platform so a
+ * caller's ownership manifest cannot describe a group that was never created.
  * The caller remains responsible for persisting any ownership manifest and for
  * selecting provider-specific command arguments or environment values.
  */
