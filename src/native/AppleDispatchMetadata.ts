@@ -658,32 +658,34 @@ export const inspectAppleDispatchMetadata = async (
 
 const selectMachoSlice = (bytes: Buffer, architecture: string) => {
   const magic = bytes.readUInt32BE(0);
-  if (magic !== 0xcafebabe && magic !== 0xcafebabf)
+  if (![0xcafebabe, 0xcafebabf, 0xbebafeca, 0xbfbafeca].includes(magic))
     return { slice: 0, sliceEnd: bytes.length };
-  const fat64 = magic === 0xcafebabf;
+  const little = magic === 0xbebafeca || magic === 0xbfbafeca;
+  const fat64 = magic === 0xcafebabf || magic === 0xbfbafeca;
+  const byteOrder = little ? "little-endian" : "big-endian";
   const stride = fat64 ? 32 : 20;
-  const count = bytes.readUInt32BE(4);
+  const read = (offset: number) =>
+    little ? bytes.readUInt32LE(offset) : bytes.readUInt32BE(offset);
+  const read64 = (offset: number) =>
+    little ? bytes.readBigUInt64LE(offset) : bytes.readBigUInt64BE(offset);
+  const count = read(4);
   const headerEnd = 8 + count * stride;
   if (count > 128 || headerEnd > bytes.length)
-    throw new RangeError("Malformed FAT architecture table");
+    throw new RangeError(`Malformed ${byteOrder} FAT architecture table`);
   const cpu = architecture === "arm64" ? 0x0100000c : 0x01000007;
   let selected: { slice: number; sliceEnd: number } | undefined;
   for (let index = 0; index < count; index++) {
     const offset = 8 + index * stride;
-    if (bytes.readUInt32BE(offset) !== cpu) continue;
+    if (read(offset) !== cpu) continue;
     if (selected !== undefined)
-      throw new TypeError("Ambiguous FAT architecture slice");
-    const start = fat64
-      ? bytes.readBigUInt64BE(offset + 8)
-      : BigInt(bytes.readUInt32BE(offset + 8));
-    const size = fat64
-      ? bytes.readBigUInt64BE(offset + 16)
-      : BigInt(bytes.readUInt32BE(offset + 12));
+      throw new TypeError(`Ambiguous ${byteOrder} FAT architecture slice`);
+    const start = fat64 ? read64(offset + 8) : BigInt(read(offset + 8));
+    const size = fat64 ? read64(offset + 16) : BigInt(read(offset + 12));
     if (start < BigInt(headerEnd) || start + size > BigInt(bytes.length))
-      throw new RangeError("FAT slice exceeds file");
+      throw new RangeError(`${byteOrder} FAT slice exceeds file`);
     selected = { slice: Number(start), sliceEnd: Number(start + size) };
   }
   if (selected === undefined)
-    throw new TypeError("Requested FAT architecture is absent");
+    throw new TypeError(`Requested ${byteOrder} FAT architecture is absent`);
   return selected;
 };

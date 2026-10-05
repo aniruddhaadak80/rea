@@ -119,31 +119,56 @@ describe("Apple dispatch binary metadata", () => {
 });
 
 describe("universal Apple dispatch metadata", () => {
-  it.each([false, true])("decodes selected FAT slices (fat64=%s)", (fat64) => {
-    const thin = fixture();
-    const offset = 256;
-    const bytes = Buffer.alloc(offset + thin.length);
-    bytes.writeUInt32BE(fat64 ? 0xcafebabf : 0xcafebabe, 0);
-    bytes.writeUInt32BE(1, 4);
-    bytes.writeUInt32BE(0x0100000c, 8);
-    if (fat64) {
-      bytes.writeBigUInt64BE(BigInt(offset), 16);
-      bytes.writeBigUInt64BE(BigInt(thin.length), 24);
-    } else {
-      bytes.writeUInt32BE(offset, 16);
-      bytes.writeUInt32BE(thin.length, 20);
-    }
-    thin.copy(bytes, offset);
-    const result = decodeAppleDispatchMetadata(bytes, 100, provenance);
-    expect(result.objc_classes[0]).toMatchObject({
-      name: "Fixture",
-      location: { address: "0x100000200", file_offset: offset + 512 },
-    });
-    expect(result.objc_dispatch_implementations[0]).toMatchObject({
-      implementation_address: "0x100000700",
-      location: { file_offset: offset + 0x488 },
-    });
-  });
+  it.each([
+    [false, false],
+    [false, true],
+    [true, false],
+    [true, true],
+  ])(
+    "decodes selected FAT slices (fat64=%s littleEndian=%s)",
+    (fat64, little) => {
+      const thin = fixture();
+      const offset = 256;
+      const bytes = Buffer.alloc(offset + thin.length);
+      const u32 = (at: number, value: number) =>
+        little
+          ? bytes.writeUInt32LE(value, at)
+          : bytes.writeUInt32BE(value, at);
+      const u64 = (at: number, value: number) =>
+        little
+          ? bytes.writeBigUInt64LE(BigInt(value), at)
+          : bytes.writeBigUInt64BE(BigInt(value), at);
+      bytes.writeUInt32BE(
+        little
+          ? fat64
+            ? 0xbfbafeca
+            : 0xbebafeca
+          : fat64
+            ? 0xcafebabf
+            : 0xcafebabe,
+        0,
+      );
+      u32(4, 1);
+      u32(8, 0x0100000c);
+      if (fat64) {
+        u64(16, offset);
+        u64(24, thin.length);
+      } else {
+        u32(16, offset);
+        u32(20, thin.length);
+      }
+      thin.copy(bytes, offset);
+      const result = decodeAppleDispatchMetadata(bytes, 100, provenance);
+      expect(result.objc_classes[0]).toMatchObject({
+        name: "Fixture",
+        location: { address: "0x100000200", file_offset: offset + 512 },
+      });
+      expect(result.objc_dispatch_implementations[0]).toMatchObject({
+        implementation_address: "0x100000700",
+        location: { file_offset: offset + 0x488 },
+      });
+    },
+  );
 });
 
 describe("FAT64 dispatch slice validation", () => {
@@ -162,7 +187,7 @@ describe("FAT64 dispatch slice validation", () => {
   it("rejects a truncated architecture table", () => {
     expect(() =>
       decodeAppleDispatchMetadata(wrapped().subarray(0, 32), 100, provenance),
-    ).toThrow("Malformed FAT architecture table");
+    ).toThrow("Malformed big-endian FAT architecture table");
   });
 
   it.each([16, 24])(
@@ -171,7 +196,7 @@ describe("FAT64 dispatch slice validation", () => {
       const bytes = wrapped();
       bytes.writeBigUInt64BE(0x100000000n, field);
       expect(() => decodeAppleDispatchMetadata(bytes, 100, provenance)).toThrow(
-        "FAT slice exceeds file",
+        "big-endian FAT slice exceeds file",
       );
     },
   );
@@ -181,13 +206,69 @@ describe("FAT64 dispatch slice validation", () => {
     bytes.writeUInt32BE(2, 4);
     bytes.copy(bytes, 40, 8, 40);
     expect(() => decodeAppleDispatchMetadata(bytes, 100, provenance)).toThrow(
-      "Ambiguous FAT architecture slice",
+      "Ambiguous big-endian FAT architecture slice",
     );
   });
 
   it("rejects a missing selected architecture", () => {
     expect(() =>
       decodeAppleDispatchMetadata(wrapped(), 100, provenance, "x86_64"),
-    ).toThrow("Requested FAT architecture is absent");
+    ).toThrow("Requested big-endian FAT architecture is absent");
+  });
+});
+
+describe("little-endian FAT dispatch slice validation", () => {
+  const wrapped = (fat64 = true, count = 1) => {
+    const thin = fixture();
+    const bytes = Buffer.alloc(256 + thin.length);
+    bytes.writeUInt32BE(fat64 ? 0xbfbafeca : 0xbebafeca, 0);
+    bytes.writeUInt32LE(count, 4);
+    bytes.writeUInt32LE(0x0100000c, 8);
+    if (fat64) {
+      bytes.writeBigUInt64LE(256n, 16);
+      bytes.writeBigUInt64LE(BigInt(thin.length), 24);
+    } else {
+      bytes.writeUInt32LE(256, 16);
+      bytes.writeUInt32LE(thin.length, 20);
+    }
+    thin.copy(bytes, 256);
+    return bytes;
+  };
+
+  it.each([false, true])(
+    "rejects a truncated little-endian architecture table (fat64=%s)",
+    (fat64) => {
+      expect(() =>
+        decodeAppleDispatchMetadata(
+          wrapped(fat64, 2).subarray(0, 32),
+          100,
+          provenance,
+        ),
+      ).toThrow("Malformed little-endian FAT architecture table");
+    },
+  );
+
+  it("rejects a little-endian slice exceeding the file", () => {
+    const bytes = wrapped();
+    bytes.writeBigUInt64LE(0x100000000n, 16);
+    expect(() => decodeAppleDispatchMetadata(bytes, 100, provenance)).toThrow(
+      "little-endian FAT slice exceeds file",
+    );
+  });
+
+  it("rejects a big-endian slice payload inside a little-endian container", () => {
+    const bytes = wrapped();
+    bytes.writeUInt32BE(0xfeedfacf, 256);
+    expect(() => decodeAppleDispatchMetadata(bytes, 100, provenance)).toThrow(
+      "Only little-endian 64-bit Mach-O metadata is supported",
+    );
+  });
+
+  it("rejects a 32-bit slice payload inside a little-endian container", () => {
+    const bytes = wrapped();
+    bytes.writeUInt32BE(0xfeedface, 256);
+    expect(() => decodeAppleDispatchMetadata(bytes, 100, provenance)).toThrow(
+      "Only little-endian 64-bit Mach-O metadata is supported",
+    );
   });
 });
