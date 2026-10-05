@@ -489,3 +489,58 @@ describe("provider process spawning primitives", () => {
     ).rejects.toMatchObject({ code: "ENOENT" });
   });
 });
+
+describe("provider process configured-platform spawning", () => {
+  it.skipIf(process.platform === "win32")(
+    "derives detach from the configured platform instead of the ambient host",
+    async () => {
+      const windowsConfigured = await spawnOwnedProviderProcess({
+        command: process.execPath,
+        arguments: [processFixturePath, "graceful"],
+        runId: "provider-process-configured-win32-run",
+        platform: "win32",
+      });
+      const posixConfigured = await spawnOwnedProviderProcess({
+        command: process.execPath,
+        arguments: [processFixturePath, "graceful"],
+        runId: "provider-process-configured-posix-run",
+        platform: "linux",
+      });
+      try {
+        await Promise.all([
+          waitForProviderProcessReady(windowsConfigured.process),
+          waitForProviderProcessReady(posixConfigured.process),
+        ]);
+        // A Windows-configured launch is never detached, so the process group
+        // its ownership token claims was never created. Reporting that claim as
+        // verified is the manifest/spawn disagreement this seam removes.
+        await expect(
+          observeOwnedProcessLineage(windowsConfigured.ownership),
+        ).resolves.toMatchObject({
+          status: "unavailable",
+          reason: "owned launcher process-group identity did not match",
+          launcherPid: windowsConfigured.process.pid,
+        });
+        // A POSIX-configured launch leads exactly the group its ownership
+        // token claims, so token-verified cleanup has real group authority.
+        await expect(
+          observeOwnedProcessLineage(posixConfigured.ownership),
+        ).resolves.toMatchObject({
+          status: "verified",
+          lineage: {
+            runId: "provider-process-configured-posix-run",
+            launcherPid: posixConfigured.process.pid,
+            launcherParentPid: process.pid,
+            processGroupId: posixConfigured.process.pid,
+            descendants: [],
+          },
+        });
+      } finally {
+        await Promise.all([
+          stopProviderProcessFixture(windowsConfigured.process),
+          stopProviderProcessFixture(posixConfigured.process),
+        ]);
+      }
+    },
+  );
+});

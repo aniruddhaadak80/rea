@@ -18,6 +18,8 @@ export interface OwnedProviderProcessSpawnOptions {
   readonly expectedCommand?: string | null;
   /** Preserve a pre-quoted Windows command-interpreter invocation exactly. */
   readonly windowsVerbatimArguments?: boolean;
+  /** Platform the launcher was configured for; defaults to the ambient host. */
+  readonly platform?: NodeJS.Platform;
   readonly cwd?: string;
   readonly env?: NodeJS.ProcessEnv;
 }
@@ -100,17 +102,20 @@ export type ProviderProcessStopResult =
 /**
  * Spawn a provider in a dedicated POSIX process group with an ownership token.
  *
+ * The detach decision and the claimed group follow the configured platform so a
+ * caller's ownership manifest cannot describe a group that was never created.
  * The caller remains responsible for persisting any ownership manifest and for
  * selecting provider-specific command arguments or environment values.
  */
 export const spawnOwnedProviderProcess = async (
   options: OwnedProviderProcessSpawnOptions,
 ): Promise<SpawnedOwnedProviderProcess> => {
+  const platform = options.platform ?? process.platform;
   const child = spawn(options.command, [...options.arguments], {
     shell: false,
     windowsHide: true,
     stdio: ["ignore", "pipe", "pipe"],
-    detached: process.platform !== "win32",
+    detached: platform !== "win32",
     windowsVerbatimArguments: options.windowsVerbatimArguments ?? false,
     env: {
       ...process.env,
