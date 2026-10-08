@@ -1,7 +1,8 @@
 import { Client } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
-import { Formatter } from "incur";
+import { Formatter, Help } from "incur";
 import { resolve } from "node:path";
+import { z } from "zod";
 
 import { CATALOG_IDENTITY } from "./catalogIdentity.js";
 import { PROMPT_CONTRACTS } from "./contracts/promptContracts.js";
@@ -11,6 +12,26 @@ import { MCP_STARTUP_POLICY } from "./mcpStartupPolicy.js";
 
 const OUTPUT_FORMATS = ["toon", "json", "yaml", "md", "jsonl"] as const;
 type OutputFormat = (typeof OUTPUT_FORMATS)[number];
+
+/** Help flags treated as a request for command usage, matching the shared CLI. */
+const HELP_FLAGS: ReadonlySet<string> = new Set(["--help", "-h"]);
+
+const MCP_DOCTOR_COMMAND = "rea mcp doctor";
+const MCP_DOCTOR_DESCRIPTION = "Validate MCP server startup and tool listing";
+/** Output options the dispatcher accepts; `parseOutputArguments` enforces them. */
+const MCP_DOCTOR_OPTIONS = z.object({
+  format: z.enum(OUTPUT_FORMATS).optional().describe("Output format"),
+  json: z.boolean().optional().describe("Emit the report as JSON"),
+  fullOutput: z.boolean().optional().describe("Show the full output envelope"),
+});
+
+/** Answer an advertised help request without starting a diagnostic session. */
+const renderMcpDoctorHelp = (): string =>
+  Help.formatCommand(MCP_DOCTOR_COMMAND, {
+    description: MCP_DOCTOR_DESCRIPTION,
+    hideGlobalOptions: true,
+    options: MCP_DOCTOR_OPTIONS,
+  });
 
 interface McpDoctorOptions {
   readonly command: string;
@@ -173,7 +194,9 @@ export const runProductionMcpDoctorCli = async (
   input: { readonly dispatcherPath: string; readonly packageRoot: string },
 ): Promise<{ readonly output: string; readonly exitCode: number }> => {
   const parsed = parseOutputArguments(arguments_);
-  if (!parsed.ok)
+  if (!parsed.ok) {
+    if (parsed.help)
+      return { output: `${renderMcpDoctorHelp()}\n`, exitCode: 0 };
     return {
       output: `${Formatter.format(
         { code: "VALIDATION_ERROR", message: parsed.message },
@@ -181,6 +204,7 @@ export const runProductionMcpDoctorCli = async (
       )}\n`,
       exitCode: 1,
     };
+  }
   const result = await runProductionMcpDoctor({
     command: process.execPath,
     args: [resolve(input.dispatcherPath), "mcp"],
@@ -252,15 +276,24 @@ const parseIdentityToolResult = (
   };
 };
 
-const parseOutputArguments = (
-  arguments_: readonly string[],
-):
+/** Parsed `rea mcp doctor` arguments, including a help request. */
+type McpDoctorArguments =
   | { readonly ok: true; readonly format: OutputFormat }
+  | { readonly ok: false; readonly help: true }
   | {
       readonly ok: false;
+      readonly help: false;
       readonly format: OutputFormat;
       readonly message: string;
-    } => {
+    };
+
+const parseOutputArguments = (
+  arguments_: readonly string[],
+): McpDoctorArguments => {
+  // A help request wins over output selection, so `--help` next to an
+  // unusable option still answers the advertised help option.
+  if (arguments_.some((argument) => HELP_FLAGS.has(argument)))
+    return { ok: false, help: true };
   let format: OutputFormat = "toon";
   for (let index = 0; index < arguments_.length; index += 1) {
     const argument = arguments_[index];
@@ -277,6 +310,7 @@ const parseOutputArguments = (
       if (!isOutputFormat(candidate))
         return {
           ok: false,
+          help: false,
           format,
           message: `Invalid output format: ${candidate ?? "missing"}`,
         };
@@ -286,6 +320,7 @@ const parseOutputArguments = (
     if (argument === "--full-output") continue;
     return {
       ok: false,
+      help: false,
       format,
       message: `Unknown mcp doctor option: ${argument ?? "missing"}`,
     };
